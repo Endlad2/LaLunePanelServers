@@ -9,12 +9,11 @@ on:
 
 jobs:
   build:
-    name: Build ${{ matrix.project }} for ${{ matrix.target }}
+    name: Build ${{ matrix.project }} (${{ matrix.target }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # Each project defines its own target list and build recipe.
         include:
           # --- csqtt: Rust project ---
           - project: csqtt
@@ -24,8 +23,6 @@ jobs:
             artifact_name: csqtt
             binary_name: csqtt-rust-server
             target: x86_64-unknown-linux-gnu
-            build_command: cargo build --release --target ${{ matrix.target }}
-            artifact_path: target/${{ matrix.target }}/release/csqtt-rust-server
 
           - project: csqtt
             language: rust
@@ -34,8 +31,6 @@ jobs:
             artifact_name: csqtt
             binary_name: csqtt-rust-server
             target: aarch64-unknown-linux-musl
-            build_command: cargo build --release --target ${{ matrix.target }}
-            artifact_path: target/${{ matrix.target }}/release/csqtt-rust-server
 
           # --- OpenFlux: Go project ---
           - project: OpenFlux
@@ -46,10 +41,6 @@ jobs:
             artifact_name: OpenFlux
             binary_name: universal-bypass-tool
             target: amd64
-            build_command: |
-              go mod tidy
-              go build -o universal-bypass-tool .
-            artifact_path: universal-bypass-tool
 
           - project: OpenFlux
             language: go
@@ -59,10 +50,6 @@ jobs:
             artifact_name: OpenFlux
             binary_name: universal-bypass-tool
             target: arm64
-            build_command: |
-              go mod tidy
-              go build -o universal-bypass-tool .
-            artifact_path: universal-bypass-tool
 
           # --- olcrtc: Go project ---
           - project: olcrtc
@@ -73,10 +60,6 @@ jobs:
             artifact_name: olcrtc
             binary_name: olcrtc
             target: amd64
-            build_command: |
-              go mod download
-              go build -trimpath -ldflags='-s -w' -o olcrtc ./cmd/olcrtc
-            artifact_path: olcrtc
 
           - project: olcrtc
             language: go
@@ -86,10 +69,6 @@ jobs:
             artifact_name: olcrtc
             binary_name: olcrtc
             target: arm64
-            build_command: |
-              go mod download
-              go build -trimpath -ldflags='-s -w' -o olcrtc ./cmd/olcrtc
-            artifact_path: olcrtc
 
     steps:
       - name: Checkout workflow repository
@@ -108,29 +87,50 @@ jobs:
         with:
           go-version: ${{ matrix.go_version }}
 
-      - name: Install musl tools (for musl Rust targets)
+      - name: Install musl tools
         if: matrix.language == 'rust' && contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       # ---------- Clone target repository ----------
       - name: Clone ${{ matrix.project }}
-        run: |
-          git clone --depth 1 "${{ matrix.repo_url }}" source-code
+        run: git clone --depth 1 "${{ matrix.repo_url }}" source-code
 
-      # ---------- Build ----------
-      - name: Build ${{ matrix.project }} for ${{ matrix.target }}
+      # ---------- Build Rust ----------
+      - name: Build (Rust)
+        if: matrix.language == 'rust'
+        working-directory: source-code/${{ matrix.source_path }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # ---------- Build Go ----------
+      - name: Build (Go)
+        if: matrix.language == 'go'
         working-directory: source-code/${{ matrix.source_path }}
         env:
           GOOS: linux
           GOARCH: ${{ matrix.target }}
           CGO_ENABLED: '0'
-        run: ${{ matrix.build_command }}
+        run: |
+          if [ "${{ matrix.project }}" = "OpenFlux" ]; then
+            go mod tidy
+            go build -o universal-bypass-tool .
+          else
+            go mod download
+            go build -trimpath -ldflags='-s -w' -o olcrtc ./cmd/olcrtc
+          fi
 
       # ---------- Collect artifact ----------
-      - name: Collect artifact
+      - name: Collect artifact (Rust)
+        if: matrix.language == 'rust'
         run: |
           mkdir -p artifacts
-          cp "source-code/${{ matrix.source_path }}/${{ matrix.artifact_path }}" \
+          cp "source-code/${{ matrix.source_path }}/target/${{ matrix.target }}/release/${{ matrix.binary_name }}" \
+             "artifacts/${{ matrix.binary_name }}-linux-${{ matrix.target }}"
+
+      - name: Collect artifact (Go)
+        if: matrix.language == 'go'
+        run: |
+          mkdir -p artifacts
+          cp "source-code/${{ matrix.source_path }}/${{ matrix.binary_name }}" \
              "artifacts/${{ matrix.binary_name }}-linux-${{ matrix.target }}"
 
       - name: Upload artifact
