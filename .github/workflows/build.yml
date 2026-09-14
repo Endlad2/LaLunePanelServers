@@ -1,0 +1,125 @@
+name: Build Matrix
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- Configuration for csqtt ---
+          - project: csqtt
+            repo_url: https://github.com/amurcanov/csqtt.git
+            language: rust
+            rust_toolchain: stable
+            source_path: rust-server
+            build_command: cargo build --release --target ${{ matrix.target }}
+            artifact_path: rust-server/target/${{ matrix.target }}/release/csqtt-rust-server
+            artifact_name: csqtt-${{ matrix.target }}
+            targets: '["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-musl"]'
+            binary_name: csqtt-rust-server
+
+          # --- Configuration for OpenFlux ---
+          - project: OpenFlux
+            repo_url: https://github.com/p1neappleXpress/OpenFlux.git
+            language: go
+            go_version: '1.22'
+            source_path: .
+            build_command: |
+              go mod tidy
+              go build -o universal-bypass-tool .
+            artifact_path: universal-bypass-tool
+            artifact_name: OpenFlux-${{ matrix.target }}
+            targets: '["amd64", "arm64"]'
+            binary_name: universal-bypass-tool
+
+          # --- Configuration for olcrtc ---
+          - project: olcrtc
+            repo_url: https://github.com/openlibrecommunity/olcrtc.git
+            language: go
+            go_version: '1.26'
+            source_path: .
+            build_command: |
+              go mod download
+              go build -trimpath -ldflags='-s -w' -o olcrtc ./cmd/olcrtc
+            artifact_path: olcrtc
+            artifact_name: olcrtc-${{ matrix.target }}
+            targets: '["amd64", "arm64"]'
+            binary_name: olcrtc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse build targets from matrix
+        id: set-matrix
+        run: |
+          echo "matrix_targets=${{ matrix.targets }}" >> $GITHUB_OUTPUT
+
+      - name: Expand target matrix
+        id: expand
+        run: |
+          echo "targets=${{ toJSON(fromJSON(steps.set-matrix.outputs.matrix_targets)) }}" >> $GITHUB_OUTPUT
+
+      - name: Build for each target
+        run: |
+          echo "Building ${{ matrix.project }} for targets: ${{ steps.expand.outputs.targets }}"
+          for target in $(echo '${{ steps.expand.outputs.targets }}' | jq -r '.[]'); do
+            echo "::group::Building for target: $target"
+            
+            # Setup language environment
+            if [ "${{ matrix.language }}" = "rust" ]; then
+              echo "Setting up Rust for target $target..."
+              rustup target add $target
+            elif [ "${{ matrix.language }}" = "go" ]; then
+              echo "Setting up Go for target $target..."
+              export GOOS=linux
+              export GOARCH=$target
+              if [ "$target" = "aarch64-unknown-linux-musl" ]; then
+                export GOARCH=arm64
+                export CGO_ENABLED=0
+              fi
+            fi
+
+            # Clone the repository
+            echo "Cloning ${{ matrix.repo_url }}..."
+            git clone --depth 1 ${{ matrix.repo_url }} source-code
+            cd source-code
+            
+            # Navigate to source path if specified
+            if [ "${{ matrix.source_path }}" != "." ]; then
+              cd ${{ matrix.source_path }}
+            fi
+
+            # Run build command
+            echo "Running build command..."
+            ${{ matrix.build_command }}
+
+            # Copy artifact
+            echo "Copying artifact..."
+            cd $GITHUB_WORKSPACE
+            mkdir -p artifacts
+            if [ -f "source-code/${{ matrix.artifact_path }}" ]; then
+              cp "source-code/${{ matrix.artifact_path }}" "artifacts/${{ matrix.binary_name }}-$target"
+            else
+              echo "Warning: Artifact not found at source-code/${{ matrix.artifact_path }}"
+              # Try to find the binary
+              find source-code -name "${{ matrix.binary_name }}" -type f -exec cp {} "artifacts/${{ matrix.binary_name }}-$target" \;
+            fi
+            
+            echo "::endgroup::"
+          done
+
+      - name: Upload all artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: artifacts/
+          retention-days: 30
