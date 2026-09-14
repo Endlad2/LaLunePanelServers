@@ -9,117 +9,133 @@ on:
 
 jobs:
   build:
-    name: Build ${{ matrix.project }}
+    name: Build ${{ matrix.project }} for ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        # Each project defines its own target list and build recipe.
         include:
-          # --- Configuration for csqtt ---
+          # --- csqtt: Rust project ---
           - project: csqtt
-            repo_url: https://github.com/amurcanov/csqtt.git
             language: rust
-            rust_toolchain: stable
+            repo_url: https://github.com/amurcanov/csqtt.git
             source_path: rust-server
-            build_command: cargo build --release --target ${{ matrix.target }}
-            artifact_path: rust-server/target/${{ matrix.target }}/release/csqtt-rust-server
-            artifact_name: csqtt-${{ matrix.target }}
-            targets: '["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-musl"]'
+            artifact_name: csqtt
             binary_name: csqtt-rust-server
+            target: x86_64-unknown-linux-gnu
+            build_command: cargo build --release --target ${{ matrix.target }}
+            artifact_path: target/${{ matrix.target }}/release/csqtt-rust-server
 
-          # --- Configuration for OpenFlux ---
+          - project: csqtt
+            language: rust
+            repo_url: https://github.com/amurcanov/csqtt.git
+            source_path: rust-server
+            artifact_name: csqtt
+            binary_name: csqtt-rust-server
+            target: aarch64-unknown-linux-musl
+            build_command: cargo build --release --target ${{ matrix.target }}
+            artifact_path: target/${{ matrix.target }}/release/csqtt-rust-server
+
+          # --- OpenFlux: Go project ---
           - project: OpenFlux
-            repo_url: https://github.com/p1neappleXpress/OpenFlux.git
             language: go
             go_version: '1.22'
+            repo_url: https://github.com/p1neappleXpress/OpenFlux.git
             source_path: .
+            artifact_name: OpenFlux
+            binary_name: universal-bypass-tool
+            target: amd64
             build_command: |
               go mod tidy
               go build -o universal-bypass-tool .
             artifact_path: universal-bypass-tool
-            artifact_name: OpenFlux-${{ matrix.target }}
-            targets: '["amd64", "arm64"]'
-            binary_name: universal-bypass-tool
 
-          # --- Configuration for olcrtc ---
+          - project: OpenFlux
+            language: go
+            go_version: '1.22'
+            repo_url: https://github.com/p1neappleXpress/OpenFlux.git
+            source_path: .
+            artifact_name: OpenFlux
+            binary_name: universal-bypass-tool
+            target: arm64
+            build_command: |
+              go mod tidy
+              go build -o universal-bypass-tool .
+            artifact_path: universal-bypass-tool
+
+          # --- olcrtc: Go project ---
           - project: olcrtc
-            repo_url: https://github.com/openlibrecommunity/olcrtc.git
             language: go
             go_version: '1.26'
+            repo_url: https://github.com/openlibrecommunity/olcrtc.git
             source_path: .
+            artifact_name: olcrtc
+            binary_name: olcrtc
+            target: amd64
             build_command: |
               go mod download
               go build -trimpath -ldflags='-s -w' -o olcrtc ./cmd/olcrtc
             artifact_path: olcrtc
-            artifact_name: olcrtc-${{ matrix.target }}
-            targets: '["amd64", "arm64"]'
+
+          - project: olcrtc
+            language: go
+            go_version: '1.26'
+            repo_url: https://github.com/openlibrecommunity/olcrtc.git
+            source_path: .
+            artifact_name: olcrtc
             binary_name: olcrtc
+            target: arm64
+            build_command: |
+              go mod download
+              go build -trimpath -ldflags='-s -w' -o olcrtc ./cmd/olcrtc
+            artifact_path: olcrtc
+
     steps:
-      - name: Checkout repository
+      - name: Checkout workflow repository
         uses: actions/checkout@v4
 
-      - name: Parse build targets from matrix
-        id: set-matrix
+      # ---------- Language setup ----------
+      - name: Setup Rust
+        if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go_version }}
+
+      - name: Install musl tools (for musl Rust targets)
+        if: matrix.language == 'rust' && contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # ---------- Clone target repository ----------
+      - name: Clone ${{ matrix.project }}
         run: |
-          echo "matrix_targets=${{ matrix.targets }}" >> $GITHUB_OUTPUT
+          git clone --depth 1 "${{ matrix.repo_url }}" source-code
 
-      - name: Expand target matrix
-        id: expand
+      # ---------- Build ----------
+      - name: Build ${{ matrix.project }} for ${{ matrix.target }}
+        working-directory: source-code/${{ matrix.source_path }}
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.target }}
+          CGO_ENABLED: '0'
+        run: ${{ matrix.build_command }}
+
+      # ---------- Collect artifact ----------
+      - name: Collect artifact
         run: |
-          echo "targets=${{ toJSON(fromJSON(steps.set-matrix.outputs.matrix_targets)) }}" >> $GITHUB_OUTPUT
+          mkdir -p artifacts
+          cp "source-code/${{ matrix.source_path }}/${{ matrix.artifact_path }}" \
+             "artifacts/${{ matrix.binary_name }}-linux-${{ matrix.target }}"
 
-      - name: Build for each target
-        run: |
-          echo "Building ${{ matrix.project }} for targets: ${{ steps.expand.outputs.targets }}"
-          for target in $(echo '${{ steps.expand.outputs.targets }}' | jq -r '.[]'); do
-            echo "::group::Building for target: $target"
-            
-            # Setup language environment
-            if [ "${{ matrix.language }}" = "rust" ]; then
-              echo "Setting up Rust for target $target..."
-              rustup target add $target
-            elif [ "${{ matrix.language }}" = "go" ]; then
-              echo "Setting up Go for target $target..."
-              export GOOS=linux
-              export GOARCH=$target
-              if [ "$target" = "aarch64-unknown-linux-musl" ]; then
-                export GOARCH=arm64
-                export CGO_ENABLED=0
-              fi
-            fi
-
-            # Clone the repository
-            echo "Cloning ${{ matrix.repo_url }}..."
-            git clone --depth 1 ${{ matrix.repo_url }} source-code
-            cd source-code
-            
-            # Navigate to source path if specified
-            if [ "${{ matrix.source_path }}" != "." ]; then
-              cd ${{ matrix.source_path }}
-            fi
-
-            # Run build command
-            echo "Running build command..."
-            ${{ matrix.build_command }}
-
-            # Copy artifact
-            echo "Copying artifact..."
-            cd $GITHUB_WORKSPACE
-            mkdir -p artifacts
-            if [ -f "source-code/${{ matrix.artifact_path }}" ]; then
-              cp "source-code/${{ matrix.artifact_path }}" "artifacts/${{ matrix.binary_name }}-$target"
-            else
-              echo "Warning: Artifact not found at source-code/${{ matrix.artifact_path }}"
-              # Try to find the binary
-              find source-code -name "${{ matrix.binary_name }}" -type f -exec cp {} "artifacts/${{ matrix.binary_name }}-$target" \;
-            fi
-            
-            echo "::endgroup::"
-          done
-
-      - name: Upload all artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
+          name: ${{ matrix.artifact_name }}-linux-${{ matrix.target }}
           path: artifacts/
           retention-days: 30
