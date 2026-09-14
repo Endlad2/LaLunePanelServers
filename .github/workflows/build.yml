@@ -15,22 +15,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # --- csqtt: Rust project ---
+          # --- csqtt: Rust project (binary name = package name "csqtt") ---
           - project: csqtt
             language: rust
             repo_url: https://github.com/amurcanov/csqtt.git
             source_path: rust-server
             artifact_name: csqtt
-            binary_name: csqtt-rust-server
+            binary_name: csqtt
             target: x86_64-unknown-linux-gnu
-
-          - project: csqtt
-            language: rust
-            repo_url: https://github.com/amurcanov/csqtt.git
-            source_path: rust-server
-            artifact_name: csqtt
-            binary_name: csqtt-rust-server
-            target: aarch64-unknown-linux-musl
 
           # --- OpenFlux: Go project ---
           - project: OpenFlux
@@ -87,10 +79,6 @@ jobs:
         with:
           go-version: ${{ matrix.go_version }}
 
-      - name: Install musl tools
-        if: matrix.language == 'rust' && contains(matrix.target, 'musl')
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
       # ---------- Clone target repository ----------
       - name: Clone ${{ matrix.project }}
         run: git clone --depth 1 "${{ matrix.repo_url }}" source-code
@@ -118,20 +106,29 @@ jobs:
             go build -trimpath -ldflags='-s -w' -o olcrtc ./cmd/olcrtc
           fi
 
-      # ---------- Collect artifact ----------
+      # ---------- Collect artifact (Rust): find the real binary name ----------
       - name: Collect artifact (Rust)
         if: matrix.language == 'rust'
         run: |
           mkdir -p artifacts
-          cp "source-code/${{ matrix.source_path }}/target/${{ matrix.target }}/release/${{ matrix.binary_name }}" \
-             "artifacts/${{ matrix.binary_name }}-linux-${{ matrix.target }}"
+          BIN="source-code/${{ matrix.source_path }}/target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          if [ ! -f "$BIN" ]; then
+            echo "Binary '${{ matrix.binary_name }}' not found, searching release dir..."
+            ls -la "source-code/${{ matrix.source_path }}/target/${{ matrix.target }}/release/"
+            BIN=$(find "source-code/${{ matrix.source_path }}/target/${{ matrix.target }}/release/" \
+                  -maxdepth 1 -type f -executable ! -name '*.d' \
+                  ! -name '*.rlib' ! -name '*.so' | head -n 1)
+          fi
+          echo "Using binary: $BIN"
+          cp "$BIN" "artifacts/${{ matrix.artifact_name }}-linux-${{ matrix.target }}"
 
+      # ---------- Collect artifact (Go) ----------
       - name: Collect artifact (Go)
         if: matrix.language == 'go'
         run: |
           mkdir -p artifacts
           cp "source-code/${{ matrix.source_path }}/${{ matrix.binary_name }}" \
-             "artifacts/${{ matrix.binary_name }}-linux-${{ matrix.target }}"
+             "artifacts/${{ matrix.artifact_name }}-linux-${{ matrix.target }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
